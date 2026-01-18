@@ -1,6 +1,7 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
+using RegionRuler.Rules;
 using System.Collections.Immutable;
 using System.Text.RegularExpressions;
 
@@ -9,71 +10,26 @@ namespace RegionRuler;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
 {
-    public const string DiagnosticIdInvalidName = "RR1001";
-    public const string DiagnosticIdInvalidPattern = "RR1002";
-    public const string DiagnosticIdEmpty = "RR1003";
-
-    // Allowed region name
-    // 允许的Region名字
     private const string AllowedRegionName = "region_ruler.allowed_region_name";
-
-    // Allowed Regex patterns
-    // 允许的正则表达式
     private const string AllowedRegexPattern = "region_ruler.allowed_regex_pattern";
-
-    // Allow empty names
-    // 允许空名字
     private const string AllowEmpty = "region_ruler.allow_empty";
-
-    // Case sensitivity
-    // 区分大小写
     private const string CaseSensitive = "region_ruler.case_sensitive";
 
-    // Regex timeout
-    // 正则超时
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
-
-    private static readonly DiagnosticDescriptor RuleInvalidName =
-        new(
-            DiagnosticIdInvalidName,
-            "Invalid #region name",
-            "Region name '{0}' is not in the allowed names list",
-            "Structure",
-            DiagnosticSeverity.Warning,
-            isEnabledByDefault: true,
-            description: "Region name must be in the configured allowed names list."
-        );
-
-    private static readonly DiagnosticDescriptor RuleInvalidPattern =
-        new(
-            DiagnosticIdInvalidPattern,
-            "Invalid #region pattern",
-            "Region name '{0}' does not match any allowed regex pattern",
-            "Structure",
-            DiagnosticSeverity.Warning,
-            isEnabledByDefault: true,
-            description: "Region name must match at least one of the configured regex patterns."
-        );
-
-    private static readonly DiagnosticDescriptor RuleEmpty =
-        new(
-            DiagnosticIdEmpty,
-            "Empty #region name",
-            "Region name cannot be empty",
-            "Structure",
-            DiagnosticSeverity.Warning,
-            isEnabledByDefault: true,
-            description: "Region must have a name when empty names are not allowed."
-        );
+    private static readonly RuleEngine RuleEngine = new();
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics
-        => ImmutableArray.Create(RuleInvalidName, RuleInvalidPattern, RuleEmpty);
+        => ImmutableArray.Create(
+            DiagnosticDescriptors.NoConfig,
+            DiagnosticDescriptors.InvalidName,
+            DiagnosticDescriptors.InvalidPattern,
+            DiagnosticDescriptors.Empty
+        );
 
     public override void Initialize(AnalysisContext context)
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
-
         context.RegisterSyntaxTreeAction(AnalyzeTree);
     }
 
@@ -82,104 +38,81 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
         var root = context.Tree.GetRoot(context.CancellationToken);
         var options = context.Options.AnalyzerConfigOptionsProvider.GetOptions(context.Tree);
 
-        var (allowedRegions, hasAllowedRegionsConfig) = GetAllowedRegions(options);
-        var (allowedPatterns, hasAllowedPatternsConfig) = GetAllowedPatterns(options);
-        var caseSensitive = GetCaseSensitive(options);
-        var allowEmpty = GetAllowEmpty(options);
+        // build configuration
+        var config = BuildConfiguration(options);
 
-        var comparer = caseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
-
+        // scan all #region directives
         foreach (var trivia in root.DescendantTrivia())
         {
             if (trivia.GetStructure() is not RegionDirectiveTriviaSyntax region)
                 continue;
 
-            var regionText = trivia.ToString();
-            var name = regionText
-                .Substring("#region".Length)
-                .Trim();
+            var regionName = ExtractRegionName(trivia);
 
-            if (string.IsNullOrWhiteSpace(name))
+            // build context
+            var ruleContext = new RuleContext(
+                regionName,
+                config.HasCustomRegionConfig,
+                config.HasCustomPatternConfig,
+                config.AllowedRegions,
+                config.AllowedPatterns,
+                config.Comparer,
+                config.AllowEmpty,
+                region.GetLocation());
+
+            // evaluate rules
+            var results = RuleEngine.Evaluate(ruleContext);
+
+            // report diagnostics
+            foreach (var result in results)
             {
-                if (!allowEmpty)
+                var diagnostic = result.ToDiagnostic(region.GetLocation());
+                if (diagnostic != null)
                 {
-                    var diagnostic = Diagnostic.Create(
-                        RuleEmpty,
-                        region.GetLocation(),
-                        "[empty]"
-                    );
                     context.ReportDiagnostic(diagnostic);
                 }
-                continue;
-            }
-
-            bool matchedInAllowedNames = allowedRegions.Contains(name, comparer);
-            bool matchedInPatterns = IsMatchedByPattern(name, allowedPatterns);
-
-            // pass if any matched
-            if (matchedInAllowedNames || matchedInPatterns)
-                continue;
-
-            // report all diagnostics if both not passed
-            if (hasAllowedRegionsConfig && hasAllowedPatternsConfig)
-            {
-                var diagnostic1 = Diagnostic.Create(
-                    RuleInvalidName,
-                    region.GetLocation(),
-                    name
-                );
-                context.ReportDiagnostic(diagnostic1);
-
-                var diagnostic2 = Diagnostic.Create(
-                    RuleInvalidPattern,
-                    region.GetLocation(),
-                    name
-                );
-                context.ReportDiagnostic(diagnostic2);
-            }
-            // only region name configured
-            else if (hasAllowedRegionsConfig)
-            {
-                var diagnostic = Diagnostic.Create(
-                    RuleInvalidName,
-                    region.GetLocation(),
-                    name
-                );
-                context.ReportDiagnostic(diagnostic);
-            }
-            // only regex pattern configured
-            else if (hasAllowedPatternsConfig)
-            {
-                var diagnostic = Diagnostic.Create(
-                    RuleInvalidPattern,
-                    region.GetLocation(),
-                    name
-                );
-                context.ReportDiagnostic(diagnostic);
             }
         }
     }
 
-    private static bool IsMatchedByPattern(string name, ImmutableArray<Regex> patterns)
+    private static string ExtractRegionName(SyntaxTrivia trivia)
     {
-        if (patterns.IsDefaultOrEmpty)
-            return false;
+        var regionText = trivia.ToString();
+        return regionText.Substring("#region".Length).Trim();
+    }
 
-        foreach (var pattern in patterns)
-        {
-            try
-            {
-                if (pattern.IsMatch(name))
-                    return true;
-            }
-            catch (RegexMatchTimeoutException)
-            {
-                // Timeout
-                continue;
-            }
-        }
+    private static Configuration BuildConfiguration(AnalyzerConfigOptions options)
+    {
+        var (allowedRegions, hasRegionConfig) = GetAllowedRegions(options);
+        var (allowedPatterns, hasPatternConfig) = GetAllowedPatterns(options);
+        var caseSensitive = GetCaseSensitive(options);
+        var allowEmpty = GetAllowEmpty(options);
+        var comparer = caseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
 
-        return false;
+        return new Configuration(
+            allowedRegions,
+            allowedPatterns,
+            hasRegionConfig,
+            hasPatternConfig,
+            comparer,
+            allowEmpty);
+    }
+
+    // configuration
+    private sealed class Configuration(
+        ImmutableHashSet<string> allowedRegions,
+        ImmutableArray<Regex> allowedPatterns,
+        bool hasCustomRegionConfig,
+        bool hasCustomPatternConfig,
+        StringComparer comparer,
+        bool allowEmpty)
+    {
+        public ImmutableHashSet<string> AllowedRegions { get; } = allowedRegions;
+        public ImmutableArray<Regex> AllowedPatterns { get; } = allowedPatterns;
+        public bool HasCustomRegionConfig { get; } = hasCustomRegionConfig;
+        public bool HasCustomPatternConfig { get; } = hasCustomPatternConfig;
+        public StringComparer Comparer { get; } = comparer;
+        public bool AllowEmpty { get; } = allowEmpty;
     }
 
     private static (ImmutableHashSet<string> regions, bool hasConfig) GetAllowedRegions(AnalyzerConfigOptions options)

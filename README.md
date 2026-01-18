@@ -13,14 +13,15 @@
 
 ## Quick start
 
+使用NUGET下载,  
+或者,  
 在项目文件 .csproj 中添加引用:
 
 ```xml
-<ItemGroup>
-  <ProjectReference Include="..\RegionRuler\RegionRuler.csproj" 
-                    OutputItemType="Analyzer" 
-                    ReferenceOutputAssembly="false" />
-</ItemGroup>
+    <PackageReference Include="RegionRuler" Version="1.2.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
 ```
 
 ## Config
