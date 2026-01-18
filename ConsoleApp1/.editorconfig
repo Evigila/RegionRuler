@@ -1,0 +1,25 @@
+# ConsoleApp1 editor configuration file
+# ConsoleApp1的RegionRuler 配置文件
+
+root = true
+
+[*.cs]
+
+# Allowed region name
+# 允许的Region名字
+region_ruler.allowed_region_name = Main, Helper
+
+# Using regex pattern
+# Ex: Allow all names starting with "Private" or "Public"
+# 正则表达式
+# 示例: 允许所有以"Private"或"Public"开头的名字
+region_ruler.allowed_regex_pattern = ^(Private|Public).*
+
+# Case sensitivity (default False)
+# 区分大小写 (默认False)
+region_ruler.case_sensitive = false
+
+# Empty name (default False)
+# 空名字 (默认False)
+region_ruler.allow_empty = false
+

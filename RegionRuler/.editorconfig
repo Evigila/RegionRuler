@@ -1,0 +1,26 @@
+# RegionRuler Configuration File Sample
+# RegionRuler配置文件示例
+
+root = true
+
+[*.cs]
+
+# ==========================================
+
+# Allowed region name
+# If the list is not configured, it falls back to the default configuration
+# 允许的Region名字
+# 如果没有配置该列表, 则回退至默认配置
+region_ruler.allowed_region_name = Main, Helper
+
+# Using regex pattern
+# 正则表达式
+region_ruler.allowed_regex_pattern = ^(Private|Public).*
+
+# Case sensitivity (default False)
+# 区分大小写 (默认False)
+region_ruler.case_sensitive = false
+
+# Empty name (default False)
+# 空名字 (默认False)
+region_ruler.allow_empty = false
