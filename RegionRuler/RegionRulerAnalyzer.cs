@@ -9,7 +9,9 @@ namespace RegionRuler;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
 {
-    public const string DiagnosticId = "REGION_RULE_001";
+    public const string DiagnosticIdInvalidName = "RR1001";
+    public const string DiagnosticIdInvalidPattern = "RR1002";
+    public const string DiagnosticIdEmpty = "RR1003";
 
     // Allowed region name
     // 允许的Region名字
@@ -31,19 +33,41 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
     // 正则超时
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
 
-    private static readonly DiagnosticDescriptor Rule =
+    private static readonly DiagnosticDescriptor RuleInvalidName =
         new(
-            DiagnosticId,
+            DiagnosticIdInvalidName,
             "Invalid #region name",
-            "Region name '{0}' is not allowed!",
+            "Region name '{0}' is not in the allowed names list",
             "Structure",
             DiagnosticSeverity.Warning,
             isEnabledByDefault: true,
-            description: "Region names should follow the configured naming rules."
+            description: "Region name must be in the configured allowed names list."
+        );
+
+    private static readonly DiagnosticDescriptor RuleInvalidPattern =
+        new(
+            DiagnosticIdInvalidPattern,
+            "Invalid #region pattern",
+            "Region name '{0}' does not match any allowed regex pattern",
+            "Structure",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Region name must match at least one of the configured regex patterns."
+        );
+
+    private static readonly DiagnosticDescriptor RuleEmpty =
+        new(
+            DiagnosticIdEmpty,
+            "Empty #region name",
+            "Region name cannot be empty",
+            "Structure",
+            DiagnosticSeverity.Warning,
+            isEnabledByDefault: true,
+            description: "Region must have a name when empty names are not allowed."
         );
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics
-        => ImmutableArray.Create(Rule);
+        => ImmutableArray.Create(RuleInvalidName, RuleInvalidPattern, RuleEmpty);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -58,8 +82,8 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
         var root = context.Tree.GetRoot(context.CancellationToken);
         var options = context.Options.AnalyzerConfigOptionsProvider.GetOptions(context.Tree);
 
-        var allowedRegions = GetAllowedRegions(options);
-        var allowedPatterns = GetAllowedPatterns(options);
+        var (allowedRegions, hasAllowedRegionsConfig) = GetAllowedRegions(options);
+        var (allowedPatterns, hasAllowedPatternsConfig) = GetAllowedPatterns(options);
         var caseSensitive = GetCaseSensitive(options);
         var allowEmpty = GetAllowEmpty(options);
 
@@ -80,7 +104,7 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
                 if (!allowEmpty)
                 {
                     var diagnostic = Diagnostic.Create(
-                        Rule,
+                        RuleEmpty,
                         region.GetLocation(),
                         "[empty]"
                     );
@@ -89,19 +113,50 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
                 continue;
             }
 
-            if (allowedRegions.Contains(name, comparer))
+            bool matchedInAllowedNames = allowedRegions.Contains(name, comparer);
+            bool matchedInPatterns = IsMatchedByPattern(name, allowedPatterns);
+
+            // pass if any matched
+            if (matchedInAllowedNames || matchedInPatterns)
                 continue;
 
-            if (IsMatchedByPattern(name, allowedPatterns))
-                continue;
+            // report all diagnostics if both not passed
+            if (hasAllowedRegionsConfig && hasAllowedPatternsConfig)
+            {
+                var diagnostic1 = Diagnostic.Create(
+                    RuleInvalidName,
+                    region.GetLocation(),
+                    name
+                );
+                context.ReportDiagnostic(diagnostic1);
 
-            var reportDiagnostic = Diagnostic.Create(
-                Rule,
-                region.GetLocation(),
-                name
-            );
-
-            context.ReportDiagnostic(reportDiagnostic);
+                var diagnostic2 = Diagnostic.Create(
+                    RuleInvalidPattern,
+                    region.GetLocation(),
+                    name
+                );
+                context.ReportDiagnostic(diagnostic2);
+            }
+            // only region name configured
+            else if (hasAllowedRegionsConfig)
+            {
+                var diagnostic = Diagnostic.Create(
+                    RuleInvalidName,
+                    region.GetLocation(),
+                    name
+                );
+                context.ReportDiagnostic(diagnostic);
+            }
+            // only regex pattern configured
+            else if (hasAllowedPatternsConfig)
+            {
+                var diagnostic = Diagnostic.Create(
+                    RuleInvalidPattern,
+                    region.GetLocation(),
+                    name
+                );
+                context.ReportDiagnostic(diagnostic);
+            }
         }
     }
 
@@ -127,7 +182,7 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
         return false;
     }
 
-    private static ImmutableHashSet<string> GetAllowedRegions(AnalyzerConfigOptions options)
+    private static (ImmutableHashSet<string> regions, bool hasConfig) GetAllowedRegions(AnalyzerConfigOptions options)
     {
         if (options.TryGetValue(AllowedRegionName, out var value) && !string.IsNullOrWhiteSpace(value))
         {
@@ -136,16 +191,16 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
                 .Select(r => r.Trim())
                 .Where(r => !string.IsNullOrWhiteSpace(r));
 
-            return ImmutableHashSet.CreateRange(regions);
+            return (ImmutableHashSet.CreateRange(regions), true);
         }
 
-        return DefaultRegions;
+        return (DefaultRegions, false);
     }
 
-    private static ImmutableArray<Regex> GetAllowedPatterns(AnalyzerConfigOptions options)
+    private static (ImmutableArray<Regex> patterns, bool hasConfig) GetAllowedPatterns(AnalyzerConfigOptions options)
     {
         if (!options.TryGetValue(AllowedRegexPattern, out var value) || string.IsNullOrWhiteSpace(value))
-            return ImmutableArray<Regex>.Empty;
+            return (ImmutableArray<Regex>.Empty, false);
 
         var caseSensitive = GetCaseSensitive(options);
         var regexOptions = RegexOptions.Compiled | (caseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase);
@@ -169,7 +224,7 @@ public sealed class RegionRulerAnalyzer : DiagnosticAnalyzer
             .Where(r => r != null)
             .Cast<Regex>();
 
-        return ImmutableArray.CreateRange(patterns);
+        return (ImmutableArray.CreateRange(patterns), true);
     }
 
     private static bool GetCaseSensitive(AnalyzerConfigOptions options)
